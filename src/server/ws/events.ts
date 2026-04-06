@@ -11,11 +11,13 @@
 export type ClientMessage =
   | { type: 'user_message'; content: string; attachments?: AttachmentRef[] }
   | { type: 'permission_response'; requestId: string; allowed: boolean; rule?: string }
+  | { type: 'set_permission_mode'; mode: string }
   | { type: 'stop_generation' }
   | { type: 'ping' }
 
 export type AttachmentRef = {
   type: 'file' | 'image'
+  name?: string
   path?: string
   data?: string // base64 for images
   mimeType?: string

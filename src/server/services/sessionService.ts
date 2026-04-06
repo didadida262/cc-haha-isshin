@@ -21,10 +21,20 @@ export type SessionListItem = {
   modifiedAt: string
   messageCount: number
   projectPath: string
+  workDir: string | null
+  workDirExists: boolean
 }
 
 export type SessionDetail = SessionListItem & {
   messages: MessageEntry[]
+}
+
+export type SessionLaunchInfo = {
+  filePath: string
+  projectDir: string
+  workDir: string
+  transcriptMessageCount: number
+  customTitle: string | null
 }
 
 export type MessageEntry = {
@@ -44,6 +54,7 @@ type RawEntry = {
   parentUuid?: string | null
   isSidechain?: boolean
   isMeta?: boolean
+  cwd?: string
   message?: {
     role?: string
     content?: unknown
@@ -113,6 +124,26 @@ export class SessionService {
   private async appendJsonlEntry(filePath: string, entry: Record<string, unknown>): Promise<void> {
     const line = JSON.stringify(entry) + '\n'
     await fs.appendFile(filePath, line, 'utf-8')
+  }
+
+  private resolveWorkDirFromEntries(
+    entries: RawEntry[],
+    fallbackProjectDir?: string,
+  ): string | null {
+    for (const entry of entries) {
+      if (entry.type === 'session-meta' && typeof (entry as Record<string, unknown>).workDir === 'string') {
+        return (entry as Record<string, unknown>).workDir as string
+      }
+    }
+
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const cwd = entries[i]?.cwd
+      if (typeof cwd === 'string' && cwd.trim()) {
+        return cwd
+      }
+    }
+
+    return fallbackProjectDir ? this.desanitizePath(fallbackProjectDir) : null
   }
 
   // --------------------------------------------------------------------------
@@ -334,6 +365,8 @@ export class SessionService {
       try {
         const stat = await fs.stat(filePath)
         const entries = await this.readJsonlFile(filePath)
+        const workDir = this.resolveWorkDirFromEntries(entries, projectDir)
+        const workDirExists = await this.pathExists(workDir)
 
         // Count transcript messages only (user + assistant)
         const messageCount = entries.filter(
@@ -358,6 +391,8 @@ export class SessionService {
           modifiedAt: stat.mtime.toISOString(),
           messageCount,
           projectPath: projectDir,
+          workDir,
+          workDirExists,
         })
       } catch {
         // Skip unreadable files
@@ -388,6 +423,8 @@ export class SessionService {
 
     const messages = this.entriesToMessages(entries)
     const title = this.extractTitle(entries)
+    const workDir = this.resolveWorkDirFromEntries(entries, projectDir)
+    const workDirExists = await this.pathExists(workDir)
 
     let createdAt = stat.birthtime.toISOString()
     for (const e of entries) {
@@ -404,6 +441,8 @@ export class SessionService {
       modifiedAt: stat.mtime.toISOString(),
       messageCount: messages.length,
       projectPath: projectDir,
+      workDir,
+      workDirExists,
       messages,
     }
   }
@@ -429,8 +468,20 @@ export class SessionService {
       throw ApiError.badRequest('workDir is required')
     }
 
+    // Resolve to absolute path
+    const absWorkDir = path.resolve(workDir)
+    let stat
+    try {
+      stat = await fs.stat(absWorkDir)
+    } catch {
+      throw ApiError.badRequest(`Working directory does not exist: ${absWorkDir}`)
+    }
+    if (!stat.isDirectory()) {
+      throw ApiError.badRequest(`Working directory is not a directory: ${absWorkDir}`)
+    }
+
     const sessionId = crypto.randomUUID()
-    const sanitized = this.sanitizePath(workDir)
+    const sanitized = this.sanitizePath(absWorkDir)
     const dirPath = path.join(this.getProjectsDir(), sanitized)
 
     // Ensure the project directory exists
@@ -451,7 +502,15 @@ export class SessionService {
       isSnapshotUpdate: false,
     }
 
-    await fs.writeFile(filePath, JSON.stringify(initialEntry) + '\n', 'utf-8')
+    // Store actual workDir for later retrieval
+    const metaEntry = {
+      type: 'session-meta',
+      isMeta: true,
+      workDir: absWorkDir,
+      timestamp: now,
+    }
+
+    await fs.writeFile(filePath, JSON.stringify(initialEntry) + '\n' + JSON.stringify(metaEntry) + '\n', 'utf-8')
 
     return { sessionId }
   }
@@ -490,6 +549,82 @@ export class SessionService {
     await this.appendJsonlEntry(found.filePath, entry)
   }
 
+  /**
+   * Get the actual working directory for a session.
+   * First checks for stored session-meta entry, then falls back to desanitizePath.
+   */
+  async getSessionWorkDir(sessionId: string): Promise<string | null> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) return null
+
+    const entries = await this.readJsonlFile(found.filePath)
+    return this.resolveWorkDirFromEntries(entries, found.projectDir)
+  }
+
+  /**
+   * Inspect how a session should be launched.
+   * Placeholder desktop-created sessions have zero transcript messages.
+   */
+  async getSessionLaunchInfo(sessionId: string): Promise<SessionLaunchInfo | null> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) return null
+
+    const entries = await this.readJsonlFile(found.filePath)
+    const workDir = this.resolveWorkDirFromEntries(entries, found.projectDir) || process.cwd()
+    let customTitle: string | null = null
+    let transcriptMessageCount = 0
+
+    for (const entry of entries) {
+      if (entry.type === 'custom-title' && typeof entry.customTitle === 'string') {
+        customTitle = entry.customTitle
+      }
+      if (
+        !entry.isMeta &&
+        entry.message?.role &&
+        (entry.type === 'user' || entry.type === 'assistant' || entry.type === 'system')
+      ) {
+        transcriptMessageCount++
+      }
+    }
+
+    return {
+      filePath: found.filePath,
+      projectDir: found.projectDir,
+      workDir,
+      transcriptMessageCount,
+      customTitle,
+    }
+  }
+
+  async deleteSessionFile(sessionId: string): Promise<void> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) return
+    await fs.unlink(found.filePath)
+  }
+
+  async appendSessionMetadata(
+    sessionId: string,
+    metadata: { workDir: string; customTitle?: string | null }
+  ): Promise<void> {
+    const found = await this.findSessionFile(sessionId)
+    if (!found) return
+
+    await this.appendJsonlEntry(found.filePath, {
+      type: 'session-meta',
+      isMeta: true,
+      workDir: metadata.workDir,
+      timestamp: new Date().toISOString(),
+    })
+
+    if (metadata.customTitle) {
+      await this.appendJsonlEntry(found.filePath, {
+        type: 'custom-title',
+        customTitle: metadata.customTitle,
+        timestamp: new Date().toISOString(),
+      })
+    }
+  }
+
   // --------------------------------------------------------------------------
   // Private helpers
   // --------------------------------------------------------------------------
@@ -519,6 +654,17 @@ export class SessionService {
       }
     }
     return messages
+  }
+
+  private async pathExists(targetPath: string | null): Promise<boolean> {
+    if (!targetPath) return false
+
+    try {
+      const stat = await fs.stat(targetPath)
+      return stat.isDirectory()
+    } catch {
+      return false
+    }
   }
 }
 

@@ -14,6 +14,7 @@
 
 import { sessionService } from '../services/sessionService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
+import { getSlashCommands } from '../ws/handler.js'
 
 export async function handleSessionsApi(
   req: Request,
@@ -42,6 +43,11 @@ export async function handleSessionsApi(
       }
     }
 
+    // Special collection route: /api/sessions/recent-projects
+    if (sessionId === 'recent-projects' && req.method === 'GET') {
+      return await getRecentProjects()
+    }
+
     // -----------------------------------------------------------------------
     // Sub-resource routes: /api/sessions/:id/messages
     // -----------------------------------------------------------------------
@@ -53,6 +59,26 @@ export async function handleSessionsApi(
         )
       }
       return await getSessionMessages(sessionId)
+    }
+
+    if (subResource === 'git-info') {
+      if (req.method !== 'GET') {
+        return Response.json(
+          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+          { status: 405 }
+        )
+      }
+      return await getGitInfo(sessionId)
+    }
+
+    if (subResource === 'slash-commands') {
+      if (req.method !== 'GET') {
+        return Response.json(
+          { error: 'METHOD_NOT_ALLOWED', message: `Method ${req.method} not allowed` },
+          { status: 405 }
+        )
+      }
+      return Response.json({ commands: getSlashCommands(sessionId) })
     }
 
     // Route to conversations handler if sub-resource is 'chat'
@@ -141,6 +167,67 @@ async function deleteSession(sessionId: string): Promise<Response> {
   return Response.json({ ok: true })
 }
 
+async function getGitInfo(sessionId: string): Promise<Response> {
+  const workDir = await sessionService.getSessionWorkDir(sessionId)
+  if (!workDir) {
+    throw ApiError.notFound(`Session not found: ${sessionId}`)
+  }
+
+  try {
+    // Get branch name
+    const branchProc = Bun.spawn(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: workDir,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const branchText = await new Response(branchProc.stdout).text()
+    const branch = branchText.trim()
+
+    // Get repo name from remote or directory
+    let repoName = ''
+    try {
+      const remoteProc = Bun.spawn(['git', 'remote', 'get-url', 'origin'], {
+        cwd: workDir,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const remoteText = await new Response(remoteProc.stdout).text()
+      const remote = remoteText.trim()
+      // Extract repo name from URL: git@github.com:user/repo.git or https://...repo.git
+      const match = remote.match(/\/([^/]+?)(?:\.git)?$/) || remote.match(/:([^/]+\/[^/]+?)(?:\.git)?$/)
+      repoName = match ? match[1]! : ''
+    } catch {
+      // No remote, use directory name
+      const parts = workDir.split('/')
+      repoName = parts[parts.length - 1] || ''
+    }
+
+    // Get short status
+    const statusProc = Bun.spawn(['git', 'status', '--porcelain'], {
+      cwd: workDir,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const statusText = await new Response(statusProc.stdout).text()
+    const changedFiles = statusText.trim().split('\n').filter(Boolean).length
+
+    return Response.json({
+      branch,
+      repoName,
+      workDir,
+      changedFiles,
+    })
+  } catch {
+    // Not a git repo or git not available
+    return Response.json({
+      branch: null,
+      repoName: null,
+      workDir,
+      changedFiles: 0,
+    })
+  }
+}
+
 async function patchSession(req: Request, sessionId: string): Promise<Response> {
   let body: { title?: string }
   try {
@@ -155,4 +242,87 @@ async function patchSession(req: Request, sessionId: string): Promise<Response> 
 
   await sessionService.renameSession(sessionId, body.title)
   return Response.json({ ok: true })
+}
+
+async function getRecentProjects(): Promise<Response> {
+  const { sessions } = await sessionService.listSessions({ limit: 200 })
+  const validSessions = sessions.filter((session) => session.workDirExists && session.workDir)
+
+  // Group sessions by projectPath and find most recent per project
+  const projectMap = new Map<string, { modifiedAt: string; sessionCount: number; sessionId: string }>()
+  for (const s of validSessions) {
+    const existing = projectMap.get(s.projectPath)
+    if (!existing || s.modifiedAt > existing.modifiedAt) {
+      projectMap.set(s.projectPath, {
+        modifiedAt: existing ? s.modifiedAt : s.modifiedAt,
+        sessionCount: (existing?.sessionCount ?? 0) + 1,
+        sessionId: s.id,
+      })
+    } else {
+      existing.sessionCount++
+    }
+  }
+
+  // Build project list with real paths
+  const projects: Array<{
+    projectPath: string
+    realPath: string
+    projectName: string
+    isGit: boolean
+    repoName: string | null
+    branch: string | null
+    modifiedAt: string
+    sessionCount: number
+  }> = []
+
+  for (const [projectPath, info] of projectMap) {
+    // Try to get real workDir from the most recent session
+    let realPath: string
+    try {
+      const workDir = await sessionService.getSessionWorkDir(info.sessionId)
+      realPath = workDir || sessionService.desanitizePath(projectPath)
+    } catch {
+      realPath = sessionService.desanitizePath(projectPath)
+    }
+
+    const projectName = realPath.split('/').filter(Boolean).pop() || projectPath
+
+    // Check if it's a git repo
+    let isGit = false
+    let repoName: string | null = null
+    let branch: string | null = null
+    try {
+      const proc = Bun.spawn(['git', 'rev-parse', '--is-inside-work-tree'], {
+        cwd: realPath, stdout: 'pipe', stderr: 'pipe',
+      })
+      const out = await new Response(proc.stdout).text()
+      isGit = out.trim() === 'true'
+
+      if (isGit) {
+        const branchProc = Bun.spawn(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], {
+          cwd: realPath, stdout: 'pipe', stderr: 'pipe',
+        })
+        branch = (await new Response(branchProc.stdout).text()).trim() || null
+
+        try {
+          const remoteProc = Bun.spawn(['git', 'remote', 'get-url', 'origin'], {
+            cwd: realPath, stdout: 'pipe', stderr: 'pipe',
+          })
+          const remote = (await new Response(remoteProc.stdout).text()).trim()
+          const match = remote.match(/:([^/]+\/[^/]+?)(?:\.git)?$/) || remote.match(/\/([^/]+\/[^/]+?)(?:\.git)?$/)
+          repoName = match ? match[1]! : null
+        } catch { /* no remote */ }
+      }
+    } catch { /* not a git repo or dir doesn't exist */ }
+
+    projects.push({
+      projectPath, realPath, projectName, isGit, repoName, branch,
+      modifiedAt: info.modifiedAt, sessionCount: info.sessionCount,
+    })
+  }
+
+  // Sort by most recent
+  projects.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt))
+
+  return Response.json({ projects: projects.slice(0, 10) })
 }

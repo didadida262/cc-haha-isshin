@@ -101,6 +101,15 @@ function makeMetaUserEntry(): Record<string, unknown> {
   }
 }
 
+function makeSessionMetaEntry(workDir: string): Record<string, unknown> {
+  return {
+    type: 'session-meta',
+    isMeta: true,
+    workDir,
+    timestamp: '2026-01-01T00:00:00.000Z',
+  }
+}
+
 // ============================================================================
 // SessionService tests
 // ============================================================================
@@ -237,29 +246,64 @@ describe('SessionService', () => {
     expect(messages).toHaveLength(2)
   })
 
+  it('should recover workDir from session-meta entries', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    await writeSessionFile('-tmp-project', sessionId, [
+      makeSnapshotEntry(),
+      makeSessionMetaEntry('/tmp/from-meta'),
+      makeUserEntry('Hello'),
+    ])
+
+    const workDir = await service.getSessionWorkDir(sessionId)
+    expect(workDir).toBe('/tmp/from-meta')
+  })
+
+  it('should recover workDir from transcript cwd when session-meta is missing', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    await writeSessionFile('-tmp-project', sessionId, [
+      makeSnapshotEntry(),
+      {
+        ...makeUserEntry('Hello'),
+        cwd: '/tmp/from-cwd',
+      },
+    ])
+
+    const workDir = await service.getSessionWorkDir(sessionId)
+    expect(workDir).toBe('/tmp/from-cwd')
+  })
+
   // --------------------------------------------------------------------------
   // createSession
   // --------------------------------------------------------------------------
 
   it('should create a new session file', async () => {
-    const { sessionId } = await service.createSession('/tmp/my-project')
+    const workDir = path.join(tmpDir, 'workspace', 'my-project')
+    await fs.mkdir(workDir, { recursive: true })
+    const { sessionId } = await service.createSession(workDir)
     expect(sessionId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
     )
 
     // Verify the file was created
-    const filePath = path.join(tmpDir, 'projects', '-tmp-my-project', `${sessionId}.jsonl`)
+    const sanitized = workDir.replace(/\//g, '-')
+    const filePath = path.join(tmpDir, 'projects', sanitized, `${sessionId}.jsonl`)
     const stat = await fs.stat(filePath)
     expect(stat.isFile()).toBe(true)
 
-    // Verify the file contains the initial snapshot entry
+    // Verify the file starts with the initial snapshot entry
     const content = await fs.readFile(filePath, 'utf-8')
-    const entry = JSON.parse(content.trim())
+    const entry = JSON.parse(content.trim().split('\n')[0]!)
     expect(entry.type).toBe('file-history-snapshot')
   })
 
   it('should throw when workDir is missing', async () => {
     expect(service.createSession('')).rejects.toThrow('workDir is required')
+  })
+
+  it('should throw when workDir does not exist', async () => {
+    expect(service.createSession('/tmp/definitely-missing-claude-code-haha')).rejects.toThrow(
+      'Working directory does not exist'
+    )
   })
 
   // --------------------------------------------------------------------------
@@ -349,6 +393,34 @@ describe('SessionService', () => {
     const detail = await service.getSession(sessionId)
     expect(detail!.title).toBe('Untitled Session')
   })
+
+  it('should detect placeholder launch info for desktop-created sessions', async () => {
+    const { sessionId } = await service.createSession(os.tmpdir())
+
+    const launchInfo = await service.getSessionLaunchInfo(sessionId)
+    expect(launchInfo).not.toBeNull()
+    expect(launchInfo!.workDir).toBe(os.tmpdir())
+    expect(launchInfo!.transcriptMessageCount).toBe(0)
+    expect(launchInfo!.customTitle).toBeNull()
+  })
+
+  it('should detect resumable launch info for transcript sessions', async () => {
+    const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const userUuid = crypto.randomUUID()
+    await writeSessionFile('-tmp-project', sessionId, [
+      makeSnapshotEntry(),
+      { type: 'session-meta', isMeta: true, workDir: '/tmp/project', timestamp: '2026-01-01T00:00:00.000Z' },
+      makeUserEntry('Hello again', userUuid),
+      makeAssistantEntry('Welcome back', userUuid),
+      { type: 'custom-title', customTitle: 'Saved chat', timestamp: '2026-01-01T00:03:00.000Z' },
+    ])
+
+    const launchInfo = await service.getSessionLaunchInfo(sessionId)
+    expect(launchInfo).not.toBeNull()
+    expect(launchInfo!.workDir).toBe('/tmp/project')
+    expect(launchInfo!.transcriptMessageCount).toBe(2)
+    expect(launchInfo!.customTitle).toBe('Saved chat')
+  })
 })
 
 // ============================================================================
@@ -409,10 +481,11 @@ describe('Sessions API', () => {
   })
 
   it('POST /api/sessions should create a session', async () => {
+    const workDir = await fs.mkdtemp(path.join(tmpDir, 'api-session-'))
     const res = await fetch(`${baseUrl}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workDir: '/tmp/test-project' }),
+      body: JSON.stringify({ workDir }),
     })
     expect(res.status).toBe(201)
 

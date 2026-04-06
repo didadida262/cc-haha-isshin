@@ -16,6 +16,11 @@ const PORT = parseInt(process.env.SERVER_PORT || '3456', 10)
 const HOST = process.env.SERVER_HOST || '127.0.0.1'
 
 export function startServer(port = PORT, host = HOST) {
+  const localConnectHost =
+    host === '0.0.0.0' || host === '127.0.0.1' || host === 'localhost'
+      ? '127.0.0.1'
+      : host
+
   /**
    * Auth is required when explicitly opted in or when bound to a non-localhost address.
    * - Default localhost dev: no auth needed (tests pass as-is).
@@ -61,6 +66,30 @@ export function startServer(port = PORT, host = HOST) {
           data: {
             sessionId,
             connectedAt: Date.now(),
+            channel: 'client',
+            sdkToken: null,
+            serverPort: port,
+            serverHost: localConnectHost,
+          },
+        })
+        if (upgraded) return undefined
+        return new Response('WebSocket upgrade failed', { status: 400 })
+      }
+
+      // Internal SDK WebSocket used by the spawned Claude CLI.
+      if (url.pathname.startsWith('/sdk/')) {
+        const sessionId = url.pathname.split('/').pop() || ''
+        if (!sessionId || !/^[0-9a-zA-Z_-]{1,64}$/.test(sessionId)) {
+          return new Response('Invalid session ID', { status: 400 })
+        }
+        const upgraded = server.upgrade(req, {
+          data: {
+            sessionId,
+            connectedAt: Date.now(),
+            channel: 'sdk',
+            sdkToken: url.searchParams.get('token'),
+            serverPort: port,
+            serverHost: localConnectHost,
           },
         })
         if (upgraded) return undefined

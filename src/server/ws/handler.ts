@@ -7,13 +7,32 @@
  */
 
 import type { ServerWebSocket } from 'bun'
-import type { ClientMessage, ServerMessage, WebSocketSession } from './events.js'
-import { conversationService } from '../services/conversationService.js'
+import type { ClientMessage, ServerMessage } from './events.js'
+import {
+  ConversationStartupError,
+  conversationService,
+} from '../services/conversationService.js'
 import { sessionService } from '../services/sessionService.js'
+import { SettingsService } from '../services/settingsService.js'
+
+const settingsService = new SettingsService()
+
+/**
+ * Cache slash commands from CLI init messages, keyed by sessionId.
+ */
+const sessionSlashCommands = new Map<string, Array<{ name: string; description: string }>>()
+
+export function getSlashCommands(sessionId: string): Array<{ name: string; description: string }> {
+  return sessionSlashCommands.get(sessionId) || []
+}
 
 export type WebSocketData = {
   sessionId: string
   connectedAt: number
+  channel: 'client' | 'sdk'
+  sdkToken: string | null
+  serverPort: number
+  serverHost: string
 }
 
 // Active WebSocket sessions
@@ -21,7 +40,20 @@ const activeSessions = new Map<string, ServerWebSocket<WebSocketData>>()
 
 export const handleWebSocket = {
   open(ws: ServerWebSocket<WebSocketData>) {
-    const { sessionId } = ws.data
+    const { sessionId, channel, sdkToken } = ws.data
+
+    if (channel === 'sdk') {
+      if (!conversationService.authorizeSdkConnection(sessionId, sdkToken)) {
+        console.warn(`[WS] Rejected SDK connection for session: ${sessionId}`)
+        ws.close(1008, 'Invalid SDK token')
+        return
+      }
+
+      conversationService.attachSdkConnection(sessionId, ws)
+      console.log(`[WS] SDK connected for session: ${sessionId}`)
+      return
+    }
+
     console.log(`[WS] Client connected for session: ${sessionId}`)
 
     activeSessions.set(sessionId, ws)
@@ -31,6 +63,12 @@ export const handleWebSocket = {
   },
 
   message(ws: ServerWebSocket<WebSocketData>, rawMessage: string | Buffer) {
+    if (ws.data.channel === 'sdk') {
+      const payload = typeof rawMessage === 'string' ? rawMessage : rawMessage.toString()
+      conversationService.handleSdkPayload(ws.data.sessionId, payload)
+      return
+    }
+
     try {
       const message = JSON.parse(
         typeof rawMessage === 'string' ? rawMessage : rawMessage.toString()
@@ -45,6 +83,10 @@ export const handleWebSocket = {
 
         case 'permission_response':
           handlePermissionResponse(ws, message)
+          break
+
+        case 'set_permission_mode':
+          handleSetPermissionMode(ws, message)
           break
 
         case 'stop_generation':
@@ -64,14 +106,22 @@ export const handleWebSocket = {
   },
 
   close(ws: ServerWebSocket<WebSocketData>, code: number, reason: string) {
-    const { sessionId } = ws.data
+    const { sessionId, channel } = ws.data
+
+    if (channel === 'sdk') {
+      console.log(`[WS] SDK disconnected from session: ${sessionId} (${code}: ${reason})`)
+      conversationService.detachSdkConnection(sessionId)
+      return
+    }
+
     console.log(`[WS] Client disconnected from session: ${sessionId} (${code}: ${reason})`)
     activeSessions.delete(sessionId)
+    cleanupStreamState(sessionId)
+    sessionSlashCommands.delete(sessionId)
 
-    // 断开连接时停止对应的 CLI 子进程
-    if (conversationService.hasSession(sessionId)) {
-      conversationService.stopSession(sessionId)
-    }
+    // NOTE: Do NOT stop CLI subprocess on WS disconnect.
+    // The CLI process should stay alive so reconnecting reuses it.
+    // This prevents "Session ID already in use" errors from stale locks.
   },
 
   drain(ws: ServerWebSocket<WebSocketData>) {
@@ -88,6 +138,7 @@ async function handleUserMessage(
   message: Extract<ClientMessage, { type: 'user_message' }>
 ) {
   const { sessionId } = ws.data
+  let workDir = process.cwd()
 
   // Send thinking status
   sendMessage(ws, { type: 'status', state: 'thinking', verb: 'Thinking' })
@@ -95,38 +146,58 @@ async function handleUserMessage(
   // 启动 CLI 子进程（如果还没有）
   if (!conversationService.hasSession(sessionId)) {
     try {
-      // Resolve the session's actual project directory from persisted data
-      let workDir = process.cwd() // fallback
+      // Resolve the session's actual working directory
       try {
-        const sessionInfo = await sessionService.findSessionFile(sessionId)
-        if (sessionInfo) {
-          workDir = sessionService.desanitizePath(sessionInfo.projectDir)
-        }
+        const resolved = await sessionService.getSessionWorkDir(sessionId)
+        if (resolved) workDir = resolved
       } catch {
         // fallback to cwd if session file not found
       }
-      await conversationService.startSession(sessionId, workDir)
-
-      // 注册 CLI stdout → WebSocket 转发
-      conversationService.onOutput(sessionId, (cliMsg) => {
-        const serverMsgs = translateCliMessage(cliMsg)
-        for (const msg of serverMsgs) {
-          sendMessage(ws, msg)
-        }
-      })
+      const runtimeSettings = await getRuntimeSettings()
+      const sdkUrl =
+        `ws://${ws.data.serverHost}:${ws.data.serverPort}/sdk/${sessionId}` +
+        `?token=${encodeURIComponent(crypto.randomUUID())}`
+      await conversationService.startSession(sessionId, workDir, sdkUrl, runtimeSettings)
     } catch (err) {
-      console.error(`[WS] CLI start failed for ${sessionId}, falling back to echo`)
-      // CLI 启动失败时回退到 echo 模式，保证基本可用性
-      sendFallbackEcho(ws, sessionId, message.content)
+      const errMsg = err instanceof Error ? err.message : String(err)
+      const code =
+        err instanceof ConversationStartupError ? err.code : 'CLI_START_FAILED'
+      console.error(`[WS] CLI start failed for ${sessionId}: ${errMsg}`)
+      sendMessage(ws, {
+        type: 'error',
+        message: errMsg,
+        code,
+        retryable:
+          err instanceof ConversationStartupError ? err.retryable : false,
+      })
+      sendMessage(ws, { type: 'status', state: 'idle' })
       return
     }
   }
 
+  // (Re-)register output callback — WS object may have changed on reconnect.
+  // Clear old callbacks and set the current one for this WS connection.
+  conversationService.clearOutputCallbacks(sessionId)
+  conversationService.onOutput(sessionId, (cliMsg) => {
+    const serverMsgs = translateCliMessage(cliMsg, sessionId)
+    for (const msg of serverMsgs) {
+      sendMessage(ws, msg)
+    }
+  })
+
   // 将用户消息写入 CLI stdin
-  const sent = conversationService.sendMessage(sessionId, message.content)
+  const sent = await conversationService.sendMessage(
+    sessionId,
+    message.content,
+    message.attachments
+  )
   if (!sent) {
-    // 消息发送失败（进程可能已退出），回退到 echo 模式
-    sendFallbackEcho(ws, sessionId, message.content)
+    sendMessage(ws, {
+      type: 'error',
+      message: 'CLI process is not running. The session may have ended or the process crashed.',
+      code: 'CLI_NOT_RUNNING',
+    })
+    sendMessage(ws, { type: 'status', state: 'idle' })
   }
 }
 
@@ -135,8 +206,24 @@ function handlePermissionResponse(
   message: Extract<ClientMessage, { type: 'permission_response' }>
 ) {
   const { sessionId } = ws.data
-  conversationService.respondToPermission(sessionId, message.requestId, message.allowed)
+  conversationService.respondToPermission(
+    sessionId,
+    message.requestId,
+    message.allowed,
+    message.rule,
+  )
   console.log(`[WS] Permission response for ${message.requestId}: ${message.allowed}`)
+}
+
+function handleSetPermissionMode(
+  ws: ServerWebSocket<WebSocketData>,
+  message: Extract<ClientMessage, { type: 'set_permission_mode' }>
+) {
+  const { sessionId } = ws.data
+  const ok = conversationService.setPermissionMode(sessionId, message.mode)
+  if (!ok) {
+    console.warn(`[WS] Ignored permission mode update for inactive session ${sessionId}`)
+  }
 }
 
 function handleStopGeneration(ws: ServerWebSocket<WebSocketData>) {
@@ -156,21 +243,39 @@ function handleStopGeneration(ws: ServerWebSocket<WebSocketData>) {
 // ============================================================================
 
 /**
- * Track the type of the currently active content block by stream index.
- * Used to determine whether a content_block_stop corresponds to a tool_use or text block.
+ * Per-session streaming state to avoid cross-session interference.
+ * Each session tracks its own dedup flag, active block types, and tool blocks.
  */
-const activeBlockTypes = new Map<number, 'text' | 'tool_use'>()
+type SessionStreamState = {
+  hasReceivedStreamEvents: boolean
+  activeBlockTypes: Map<number, 'text' | 'tool_use'>
+  activeToolBlocks: Map<number, { toolName: string; toolUseId: string; inputJson: string }>
+}
 
-/**
- * 将 CLI stdout 的 stream-json 消息转换为 WebSocket ServerMessage 数组。
- *
- * CLI 输出格式参考 src/bridge/sessionRunner.ts 中的 stream-json 协议。
- * 返回数组以支持单条 CLI 消息产生多条 ServerMessage（例如多个内容块）。
- */
-function translateCliMessage(cliMsg: any): ServerMessage[] {
+const sessionStreamStates = new Map<string, SessionStreamState>()
+
+function getStreamState(sessionId: string): SessionStreamState {
+  let state = sessionStreamStates.get(sessionId)
+  if (!state) {
+    state = {
+      hasReceivedStreamEvents: false,
+      activeBlockTypes: new Map(),
+      activeToolBlocks: new Map(),
+    }
+    sessionStreamStates.set(sessionId, state)
+  }
+  return state
+}
+
+/** Clean up stream state when session disconnects */
+function cleanupStreamState(sessionId: string) {
+  sessionStreamStates.delete(sessionId)
+}
+
+function translateCliMessage(cliMsg: any, sessionId: string): ServerMessage[] {
+  const streamState = getStreamState(sessionId)
   switch (cliMsg.type) {
     case 'assistant': {
-      // 检查是否有认证错误
       if (cliMsg.error) {
         return [{
           type: 'error',
@@ -179,42 +284,34 @@ function translateCliMessage(cliMsg: any): ServerMessage[] {
         }]
       }
 
-      // 助手消息 - 提取所有内容块，每个块产生独立的 ServerMessage
+      // If we already received stream_events, text/thinking were already sent.
+      // Only extract tool_use blocks (stream_event's content_block_stop lacks complete tool info).
       if (cliMsg.message?.content && Array.isArray(cliMsg.message.content)) {
         const messages: ServerMessage[] = []
 
         for (const block of cliMsg.message.content) {
-          if (block.type === 'thinking' && block.thinking) {
-            // Bug #5: 处理 thinking 块
-            messages.push({ type: 'thinking', text: block.thinking })
-          } else if (block.type === 'text' && block.text) {
-            messages.push({ type: 'content_start', blockType: 'text' })
-            messages.push({ type: 'content_delta', text: block.text })
-          } else if (block.type === 'tool_use') {
-            // Bug #2: 不再 return，而是 push 到数组中
-            // Bug #3: 发送 tool input
-            // Bug #4: 发送 tool_use_complete
-            messages.push({
-              type: 'content_start',
-              blockType: 'tool_use',
-              toolName: block.name,
-              toolUseId: block.id,
-            })
-            if (block.input !== undefined) {
+          if (streamState.hasReceivedStreamEvents) {
+            // Everything was already sent via stream_event — skip all blocks
+          } else {
+            // No stream events received — this is the only source, process everything
+            if (block.type === 'thinking' && block.thinking) {
+              messages.push({ type: 'thinking', text: block.thinking })
+            } else if (block.type === 'text' && block.text) {
+              messages.push({ type: 'content_start', blockType: 'text' })
+              messages.push({ type: 'content_delta', text: block.text })
+            } else if (block.type === 'tool_use') {
               messages.push({
-                type: 'content_delta',
-                toolInput: JSON.stringify(block.input),
+                type: 'tool_use_complete',
+                toolName: block.name,
+                toolUseId: block.id,
+                input: block.input,
               })
             }
-            messages.push({
-              type: 'tool_use_complete',
-              toolName: block.name,
-              toolUseId: block.id,
-              input: block.input,
-            })
           }
         }
 
+        // Reset flag for next turn
+        streamState.hasReceivedStreamEvents = false
         return messages
       }
       return []
@@ -242,7 +339,7 @@ function translateCliMessage(cliMsg: any): ServerMessage[] {
     }
 
     case 'stream_event': {
-      // Bug #6: 处理增量流式事件
+      streamState.hasReceivedStreamEvents = true
       const event = cliMsg.event
       if (!event) return []
 
@@ -255,11 +352,16 @@ function translateCliMessage(cliMsg: any): ServerMessage[] {
           const contentBlock = event.content_block
           if (!contentBlock) return []
 
-          // Track the block type by index for content_block_stop
           const index = event.index ?? 0
-          activeBlockTypes.set(index, contentBlock.type === 'tool_use' ? 'tool_use' : 'text')
+          streamState.activeBlockTypes.set(index, contentBlock.type === 'tool_use' ? 'tool_use' : 'text')
 
           if (contentBlock.type === 'tool_use') {
+            // Track tool info so content_block_stop can emit complete data
+            streamState.activeToolBlocks.set(index, {
+              toolName: contentBlock.name || '',
+              toolUseId: contentBlock.id || '',
+              inputJson: '',
+            })
             return [{
               type: 'content_start',
               blockType: 'tool_use',
@@ -278,6 +380,10 @@ function translateCliMessage(cliMsg: any): ServerMessage[] {
             return [{ type: 'content_delta', text: delta.text }]
           }
           if (delta.type === 'input_json_delta' && delta.partial_json) {
+            // Accumulate tool input JSON
+            const index = event.index ?? 0
+            const toolBlock = streamState.activeToolBlocks.get(index)
+            if (toolBlock) toolBlock.inputJson += delta.partial_json
             return [{ type: 'content_delta', toolInput: delta.partial_json }]
           }
           if (delta.type === 'thinking_delta' && delta.thinking) {
@@ -288,19 +394,22 @@ function translateCliMessage(cliMsg: any): ServerMessage[] {
 
         case 'content_block_stop': {
           const index = event.index ?? 0
-          const blockType = activeBlockTypes.get(index)
-          activeBlockTypes.delete(index)
+          const blockType = streamState.activeBlockTypes.get(index)
+          streamState.activeBlockTypes.delete(index)
 
-          // For tool_use blocks, emit tool_use_complete
-          // Note: toolName and toolUseId may not be available at stop time
-          // from stream events alone; the UI should track them from content_block_start
           if (blockType === 'tool_use') {
-            return [{
-              type: 'tool_use_complete',
-              toolName: '',
-              toolUseId: '',
-              input: null,
-            }]
+            const toolBlock = streamState.activeToolBlocks.get(index)
+            streamState.activeToolBlocks.delete(index)
+            if (toolBlock) {
+              let parsedInput = null
+              try { parsedInput = JSON.parse(toolBlock.inputJson) } catch {}
+              return [{
+                type: 'tool_use_complete',
+                toolName: toolBlock.toolName,
+                toolUseId: toolBlock.toolUseId,
+                input: parsedInput,
+              }]
+            }
           }
           return []
         }
@@ -334,6 +443,9 @@ function translateCliMessage(cliMsg: any): ServerMessage[] {
       return []
     }
 
+    case 'control_response':
+      return []
+
     case 'result': {
       // 对话结果（成功或错误）
       const usage = {
@@ -342,11 +454,16 @@ function translateCliMessage(cliMsg: any): ServerMessage[] {
       }
 
       if (cliMsg.is_error) {
+        const resultMessage =
+          (typeof cliMsg.result === 'string' && cliMsg.result) ||
+          (Array.isArray(cliMsg.errors) && cliMsg.errors.length > 0
+            ? cliMsg.errors.join('\n')
+            : 'Unknown error')
         // 错误和完成消息都发送
         return [
           {
             type: 'error',
-            message: cliMsg.result || 'Unknown error',
+            message: resultMessage,
             code: 'CLI_ERROR',
           },
           { type: 'message_complete', usage },
@@ -360,8 +477,30 @@ function translateCliMessage(cliMsg: any): ServerMessage[] {
       // 区分不同的 system 子类型
       const subtype = cliMsg.subtype
       if (subtype === 'init') {
-        // CLI 初始化完成 — 发送模型信息
-        return [{ type: 'status', state: 'idle', verb: `Model: ${cliMsg.model || 'unknown'}` }]
+        // CLI 初始化完成 — 缓存 slash commands 并发送模型信息
+        // NOTE: Do NOT send status:idle here — the CLI init fires while
+        // processing the first user message, and sending idle would reset
+        // the frontend's streaming state prematurely.
+        if (cliMsg.slash_commands && Array.isArray(cliMsg.slash_commands)) {
+          sessionSlashCommands.set(sessionId, cliMsg.slash_commands.map((cmd: any) => ({
+            name: typeof cmd === 'string' ? cmd : (cmd.name || cmd.command || ''),
+            description: typeof cmd === 'string' ? '' : (cmd.description || ''),
+          })))
+        }
+        const messages: ServerMessage[] = [
+          // Send model info as a system notification, not a status change
+          { type: 'system_notification', subtype: 'init', message: `Model: ${cliMsg.model || 'unknown'}`, data: { model: cliMsg.model } },
+        ]
+        // Send slash commands to frontend
+        const cmds = sessionSlashCommands.get(sessionId)
+        if (cmds && cmds.length > 0) {
+          messages.push({
+            type: 'system_notification',
+            subtype: 'slash_commands',
+            data: cmds,
+          })
+        }
+        return messages
       }
       if (subtype === 'hook_started' || subtype === 'hook_response') {
         // Hook 执行中 — 不转发给前端
@@ -410,31 +549,6 @@ function translateCliMessage(cliMsg: any): ServerMessage[] {
 }
 
 // ============================================================================
-// Fallback echo (for when CLI is not available)
-// ============================================================================
-
-/**
- * 当 CLI 子进程启动失败或不可用时，使用 echo 模式作为回退。
- * 保证 WebSocket 客户端始终能收到完整的消息流转。
- */
-function sendFallbackEcho(
-  ws: ServerWebSocket<WebSocketData>,
-  sessionId: string,
-  content: string
-) {
-  sendMessage(ws, { type: 'content_start', blockType: 'text' })
-  sendMessage(ws, {
-    type: 'content_delta',
-    text: `[Server] Received message for session ${sessionId}: "${content}". Chat integration pending.`,
-  })
-  sendMessage(ws, {
-    type: 'message_complete',
-    usage: { input_tokens: 0, output_tokens: 0 },
-  })
-  sendMessage(ws, { type: 'status', state: 'idle' })
-}
-
-// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -444,6 +558,32 @@ function sendMessage(ws: ServerWebSocket<WebSocketData>, message: ServerMessage)
 
 function sendError(ws: ServerWebSocket<WebSocketData>, message: string, code: string) {
   sendMessage(ws, { type: 'error', message, code })
+}
+
+async function getRuntimeSettings(): Promise<{
+  permissionMode?: string
+  model?: string
+  effort?: string
+}> {
+  const userSettings = await settingsService.getUserSettings()
+  const baseModel =
+    typeof userSettings.model === 'string' && userSettings.model.trim()
+      ? userSettings.model
+      : undefined
+  const modelContext =
+    typeof userSettings.modelContext === 'string' && userSettings.modelContext.trim()
+      ? userSettings.modelContext
+      : undefined
+  const effort =
+    typeof userSettings.effort === 'string' && userSettings.effort.trim()
+      ? userSettings.effort
+      : undefined
+
+  return {
+    permissionMode: await settingsService.getPermissionMode().catch(() => undefined),
+    model: baseModel ? (modelContext ? `${baseModel}:${modelContext}` : baseModel) : undefined,
+    effort,
+  }
 }
 
 /**
