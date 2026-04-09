@@ -438,7 +438,9 @@ export const en = {
   // ─── Tabs ──────────────────────────────────────
   'tabs.close': 'Close',
   'tabs.closeOthers': 'Close Others',
+  'tabs.closeLeft': 'Close to the Left',
   'tabs.closeRight': 'Close to the Right',
+  'tabs.closeAll': 'Close All',
   'tabs.closeConfirmTitle': 'Session Running',
   'tabs.closeConfirmMessage': 'This session is still running. What would you like to do?',
   'tabs.closeConfirmKeep': 'Keep Running',

@@ -12,11 +12,15 @@ export function TabBar() {
   const closeTab = useTabStore((s) => s.closeTab)
   const disconnectSession = useChatStore((s) => s.disconnectSession)
 
+  const moveTab = useTabStore((s) => s.moveTab)
+
   const scrollRef = useRef<HTMLDivElement>(null)
   const [canScrollLeft, setCanScrollLeft] = useState(false)
   const [canScrollRight, setCanScrollRight] = useState(false)
   const [contextMenu, setContextMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null)
   const [closingTabId, setClosingTabId] = useState<string | null>(null)
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+  const dragIndexRef = useRef<number | null>(null)
   const t = useTranslation()
 
   const updateScrollState = useCallback(() => {
@@ -86,6 +90,16 @@ export function TabBar() {
     }
   }
 
+  const handleCloseLeft = (sessionId: string) => {
+    setContextMenu(null)
+    const idx = tabs.findIndex((t) => t.sessionId === sessionId)
+    const leftIds = tabs.slice(0, idx).map((t) => t.sessionId)
+    for (const id of leftIds) {
+      disconnectSession(id)
+      closeTab(id)
+    }
+  }
+
   const handleCloseRight = (sessionId: string) => {
     setContextMenu(null)
     const idx = tabs.findIndex((t) => t.sessionId === sessionId)
@@ -94,6 +108,41 @@ export function TabBar() {
       disconnectSession(id)
       closeTab(id)
     }
+  }
+
+  const handleCloseAll = () => {
+    setContextMenu(null)
+    const allIds = tabs.map((t) => t.sessionId)
+    for (const id of allIds) {
+      disconnectSession(id)
+      closeTab(id)
+    }
+  }
+
+  const handleDragStart = (index: number) => {
+    dragIndexRef.current = index
+  }
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault()
+    if (dragIndexRef.current === null || dragIndexRef.current === index) {
+      setDragOverIndex(null)
+      return
+    }
+    setDragOverIndex(index)
+  }
+
+  const handleDrop = (index: number) => {
+    if (dragIndexRef.current !== null && dragIndexRef.current !== index) {
+      moveTab(dragIndexRef.current, index)
+    }
+    dragIndexRef.current = null
+    setDragOverIndex(null)
+  }
+
+  const handleDragEnd = () => {
+    dragIndexRef.current = null
+    setDragOverIndex(null)
   }
 
   if (tabs.length === 0) return null
@@ -107,15 +156,20 @@ export function TabBar() {
         </button>
       )}
 
-      <div ref={scrollRef} className="flex-1 flex items-center overflow-x-hidden" data-tauri-drag-region>
-        {tabs.map((tab) => (
+      <div ref={scrollRef} className="flex-1 flex items-center overflow-x-hidden" data-tauri-drag-region onDragOver={(e) => e.preventDefault()}>
+        {tabs.map((tab, index) => (
           <TabItem
             key={tab.sessionId}
             tab={tab}
             isActive={tab.sessionId === activeTabId}
+            isDragOver={dragOverIndex === index}
             onClick={() => setActiveTab(tab.sessionId)}
             onClose={() => handleClose(tab.sessionId)}
             onContextMenu={(e) => handleContextMenu(e, tab.sessionId)}
+            onDragStart={() => handleDragStart(index)}
+            onDragOver={(e) => handleDragOver(e, index)}
+            onDrop={() => handleDrop(index)}
+            onDragEnd={handleDragEnd}
           />
         ))}
       </div>
@@ -144,10 +198,23 @@ export function TabBar() {
             {t('tabs.closeOthers')}
           </button>
           <button
+            onClick={() => handleCloseLeft(contextMenu.sessionId)}
+            className="w-full px-3 py-1.5 text-xs text-left text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]"
+          >
+            {t('tabs.closeLeft')}
+          </button>
+          <button
             onClick={() => handleCloseRight(contextMenu.sessionId)}
             className="w-full px-3 py-1.5 text-xs text-left text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]"
           >
             {t('tabs.closeRight')}
+          </button>
+          <div className="my-1 border-t border-[var(--color-border)]" />
+          <button
+            onClick={handleCloseAll}
+            className="w-full px-3 py-1.5 text-xs text-left text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]"
+          >
+            {t('tabs.closeAll')}
           </button>
         </div>
       )}
@@ -186,23 +253,34 @@ export function TabBar() {
   )
 }
 
-function TabItem({ tab, isActive, onClick, onClose, onContextMenu }: {
+function TabItem({ tab, isActive, isDragOver, onClick, onClose, onContextMenu, onDragStart, onDragOver, onDrop, onDragEnd }: {
   tab: Tab
   isActive: boolean
+  isDragOver: boolean
   onClick: () => void
   onClose: () => void
   onContextMenu: (e: React.MouseEvent) => void
+  onDragStart: () => void
+  onDragOver: (e: React.DragEvent) => void
+  onDrop: () => void
+  onDragEnd: () => void
 }) {
   return (
     <div
+      draggable
       onClick={onClick}
       onContextMenu={onContextMenu}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
       className={`
-        flex-shrink-0 flex items-center gap-1.5 px-3 cursor-pointer group transition-colors
+        flex-shrink-0 flex items-center gap-1.5 px-3 cursor-pointer group transition-colors relative
         ${isActive
           ? 'h-[37px] bg-[var(--color-surface)] border-t-2 border-t-[var(--color-brand)]'
           : 'h-[37px] bg-transparent hover:bg-[var(--color-surface-hover)]'
         }
+        ${isDragOver ? 'before:absolute before:left-0 before:top-[6px] before:bottom-[6px] before:w-[2px] before:bg-[var(--color-brand)] before:rounded-full' : ''}
       `}
       style={{ width: TAB_WIDTH, maxWidth: TAB_WIDTH }}
     >

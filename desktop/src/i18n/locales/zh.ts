@@ -440,7 +440,9 @@ export const zh: Record<TranslationKey, string> = {
   // ─── Tabs ──────────────────────────────────────
   'tabs.close': '关闭',
   'tabs.closeOthers': '关闭其他',
+  'tabs.closeLeft': '关闭左侧',
   'tabs.closeRight': '关闭右侧',
+  'tabs.closeAll': '关闭所有',
   'tabs.closeConfirmTitle': '会话运行中',
   'tabs.closeConfirmMessage': '此会话仍在运行，你想要怎么做？',
   'tabs.closeConfirmKeep': '保持运行',

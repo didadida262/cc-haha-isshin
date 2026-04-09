@@ -29,6 +29,7 @@ type TabStore = {
   setActiveTab: (sessionId: string) => void
   updateTabTitle: (sessionId: string, title: string) => void
   updateTabStatus: (sessionId: string, status: Tab['status']) => void
+  moveTab: (fromIndex: number, toIndex: number) => void
 
   saveTabs: () => void
   restoreTabs: () => Promise<void>
@@ -90,6 +91,17 @@ export const useTabStore = create<TabStore>((set, get) => ({
     set((s) => ({
       tabs: s.tabs.map((t) => (t.sessionId === sessionId ? { ...t, status } : t)),
     }))
+  },
+
+  moveTab: (fromIndex, toIndex) => {
+    if (fromIndex === toIndex) return
+    const { tabs } = get()
+    if (fromIndex < 0 || fromIndex >= tabs.length || toIndex < 0 || toIndex >= tabs.length) return
+    const newTabs = [...tabs]
+    const [moved] = newTabs.splice(fromIndex, 1)
+    newTabs.splice(toIndex, 0, moved!)
+    set({ tabs: newTabs })
+    get().saveTabs()
   },
 
   saveTabs: () => {
