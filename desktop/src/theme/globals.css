@@ -505,7 +505,7 @@ button, input, textarea, select, a, [role="button"] {
 }
 
 .glass-panel:focus-within {
-  box-shadow: var(--shadow-focus-ring), var(--shadow-dropdown);
+  box-shadow: var(--shadow-dropdown);
 }
 
 .sidebar-shell {
@@ -807,11 +807,15 @@ button, input, textarea, select, a, [role="button"] {
 [data-theme="dark"] textarea:focus,
 [data-theme="dark"] select:focus {
   outline: none;
-  border-color: rgba(0, 245, 255, 0.40);
-  box-shadow:
-    0 0 0 1px rgba(0, 245, 255, 0.15),
-    0 0 16px rgba(0, 245, 255, 0.08),
-    inset 0 0 4px rgba(0, 245, 255, 0.03);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.glass-panel input:focus,
+.glass-panel textarea:focus {
+  outline: none;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 /* Glowing code blocks */

@@ -568,7 +568,7 @@ export const MessageBlock = memo(function MessageBlock({
         message.message.trim() !== '' &&
         message.message !== displayMessage
       return (
-        <div className="mb-3 px-4 py-2.5 rounded-lg border border-[var(--color-error)]/20 bg-[var(--color-error-container)]/28 text-sm text-[var(--color-error)]">
+        <div className="mb-3 px-4 py-2.5 rounded-lg border border-[var(--color-error)]/20 bg-[var(--color-surface-container)]/80 text-sm text-[var(--color-error)]">
           <strong>Error:</strong> {displayMessage}
           {showRawDetail && (
             <div className="mt-1 whitespace-pre-wrap text-xs text-[var(--color-on-error-container)]/85">
