@@ -78,7 +78,7 @@ export function InlineImageGallery({ text }: Props) {
                 }}
               />
               <div className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition-all group-hover:bg-black/20 group-hover:opacity-100">
-                <span className="material-symbols-outlined rounded-full bg-white/90 p-2 text-[20px] text-[var(--color-text-primary)] shadow-lg">
+                <span className="material-symbols-outlined rounded-full bg-[var(--color-surface-glass)] p-2 text-[20px] text-[var(--color-text-primary)] shadow-lg">
                   fullscreen
                 </span>
               </div>

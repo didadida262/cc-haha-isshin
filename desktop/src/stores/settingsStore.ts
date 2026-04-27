@@ -6,6 +6,7 @@ import type { Locale } from '../i18n'
 import { useUIStore } from './uiStore'
 
 const LOCALE_STORAGE_KEY = 'cc-haha-locale'
+const THEME_STORAGE_KEY = 'cc-haha-theme'
 
 function getStoredLocale(): Locale {
   try {
@@ -58,7 +59,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         modelsApi.getEffort(),
         settingsApi.getUser(),
       ])
-      const theme = userSettings.theme === 'dark' ? 'dark' : 'light'
+      // Prioritize localStorage over server; default to dark
+      let storedTheme: ThemeMode | null = null
+      try { storedTheme = localStorage.getItem(THEME_STORAGE_KEY) } catch { /* noop */ }
+      const theme = (storedTheme === 'light' || storedTheme === 'dark') ? storedTheme : 'dark'
       useUIStore.getState().setTheme(theme)
       set({
         permissionMode: mode,

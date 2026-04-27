@@ -23,7 +23,7 @@ export function ScheduledTasksEmpty() {
             <span>{t('sidebar.newSession')}</span>
           </div>
           {/* Active State: Scheduled */}
-          <div className="px-3 py-2 bg-[#FAF9F5] text-[#1B1C1A] rounded-lg relative before:content-[''] before:absolute before:left-[-8px] before:w-1 before:h-4 before:bg-[#8F482F] before:rounded-full cursor-pointer duration-200 ease-in-out flex items-center gap-3">
+          <div className="px-3 py-2 bg-[#FAF9F5] text-[#1B1C1A] rounded-lg relative before:content-[''] before:absolute before:left-[-8px] before:w-1 before:h-4 before:bg-[var(--color-primary)] before:rounded-full cursor-pointer duration-200 ease-in-out flex items-center gap-3">
             <span className="material-symbols-outlined">calendar_today</span>
             <span>{t('sidebar.scheduled')}</span>
           </div>
@@ -57,7 +57,7 @@ export function ScheduledTasksEmpty() {
       {/* Main Canvas */}
       <main className="flex-1 ml-[280px] flex flex-col min-h-screen">
         {/* TopAppBar */}
-        <header className="fixed top-0 right-0 left-[280px] z-30 bg-[#FAF9F5] flex justify-between items-center px-6 h-12 w-full border-b border-[#F4F4F0]">
+        <header className="fixed top-0 right-0 left-[280px] z-30 bg-[#FAF9F5] flex justify-between items-center px-6 h-12 w-full border-b border-[var(--color-border)]">
           <div className="flex items-center gap-6 h-full">
             <div className="text-sm font-bold text-[#1B1C1A] uppercase tracking-tighter font-[Manrope,sans-serif]">Claude Code Companion</div>
             <nav className="flex items-center gap-4 h-full font-[Manrope,sans-serif] font-semibold tracking-wide text-sm">
@@ -87,7 +87,7 @@ export function ScheduledTasksEmpty() {
               <div className="absolute -inset-4 bg-[#F4F4F0] rounded-[32px] -z-10 transition-all"></div>
               <div className="flex flex-col items-center py-20 px-8">
                 <div className="w-32 h-32 rounded-full bg-[#E9E8E4] flex items-center justify-center mb-10 shadow-sm">
-                  <div className="w-20 h-20 rounded-full bg-white flex items-center justify-center border border-[#DAC1BA]/10">
+                  <div className="w-20 h-20 rounded-full bg-[var(--color-surface-bright)] flex items-center justify-center border border-[var(--color-border)]">
                     <span
                       className="material-symbols-outlined text-[#8F482F] text-5xl"
                       style={{ fontVariationSettings: "'wght' 300" }}
@@ -99,7 +99,7 @@ export function ScheduledTasksEmpty() {
                 <p className="text-[#54433E] font-[Inter,sans-serif] text-lg max-w-sm mx-auto leading-relaxed mb-12">
                   {t('tasks.emptyTitle')} {t('tasks.emptyDesc')}
                 </p>
-                <button className="group relative px-8 py-4 bg-[#8F482F] text-white rounded-xl font-[Manrope,sans-serif] font-bold text-sm tracking-wide shadow-lg hover:shadow-[#8F482F]/20 transition-all flex items-center gap-3 overflow-hidden">
+                <button className="group relative px-8 py-4 bg-[var(--color-primary)] text-[var(--color-on-primary)] rounded-xl font-[Manrope,sans-serif] font-bold text-sm tracking-wide shadow-lg hover:shadow-[var(--shadow-button-primary)] transition-all flex items-center gap-3 overflow-hidden">
                   <div className="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent opacity-30"></div>
                   <span className="material-symbols-outlined text-lg">add_task</span>
                   <span>{t('tasks.newTask')}</span>
@@ -109,15 +109,15 @@ export function ScheduledTasksEmpty() {
 
             {/* Subtle Decorative Bento Elements */}
             <div className="grid grid-cols-3 gap-4 mt-20 opacity-40">
-              <div className="h-24 bg-[#F4F4F0] rounded-xl border border-[#DAC1BA]/10 flex flex-col items-center justify-center p-4">
+              <div className="h-24 bg-[#F4F4F0] rounded-xl border border-[var(--color-border)] flex flex-col items-center justify-center p-4">
                 <span className="material-symbols-outlined text-[#87736D] mb-2">commit</span>
                 <div className="w-12 h-1 bg-[#DAC1BA]/30 rounded-full"></div>
               </div>
-              <div className="h-24 bg-[#F4F4F0] rounded-xl border border-[#DAC1BA]/10 flex flex-col items-center justify-center p-4">
+              <div className="h-24 bg-[#F4F4F0] rounded-xl border border-[var(--color-border)] flex flex-col items-center justify-center p-4">
                 <span className="material-symbols-outlined text-[#87736D] mb-2">terminal</span>
                 <div className="w-8 h-1 bg-[#DAC1BA]/30 rounded-full"></div>
               </div>
-              <div className="h-24 bg-[#F4F4F0] rounded-xl border border-[#DAC1BA]/10 flex flex-col items-center justify-center p-4">
+              <div className="h-24 bg-[#F4F4F0] rounded-xl border border-[var(--color-border)] flex flex-col items-center justify-center p-4">
                 <span className="material-symbols-outlined text-[#87736D] mb-2">code_blocks</span>
                 <div className="w-10 h-1 bg-[#DAC1BA]/30 rounded-full"></div>
               </div>
@@ -126,7 +126,7 @@ export function ScheduledTasksEmpty() {
         </div>
 
         {/* Footer */}
-        <footer className="fixed bottom-0 left-0 w-full h-8 bg-[#FAF9F5] flex items-center justify-between px-4 z-50 border-t border-[#87736D]/20 font-[Inter,sans-serif] text-xs tracking-tight">
+        <footer className="fixed bottom-0 left-0 w-full h-8 bg-[#FAF9F5] flex items-center justify-between px-4 z-50 border-t border-[var(--color-border)] font-[Inter,sans-serif] text-xs tracking-tight">
           <div className="flex items-center gap-3 text-[#87736D]">
             <div className="w-2 h-2 rounded-full bg-[#677B4E]"></div>
             <span>{mockStatusBar.user} &bull; {mockStatusBar.username} &bull; {mockStatusBar.plan}</span>

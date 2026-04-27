@@ -107,7 +107,7 @@ export function AppShell() {
       <main
         id="content-area"
         data-sidebar-state={sidebarOpen ? 'open' : 'closed'}
-        className="min-w-0 flex-1 flex flex-col overflow-hidden"
+        className="min-w-0 flex flex-1 flex-col overflow-hidden"
       >
         <TabBar />
         <ContentRouter />

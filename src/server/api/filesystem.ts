@@ -27,11 +27,16 @@ function isAllowedFilesystemPath(targetPath: string): boolean {
   const resolvedPath = path.resolve(targetPath)
   const homeDir = path.resolve(os.homedir())
 
-  if (isWithinRoot(resolvedPath, homeDir) || isWithinRoot(resolvedPath, '/tmp')) {
+  // Allow paths within user's home directory
+  if (resolvedPath.startsWith(homeDir)) {
     return true
   }
 
-  // macOS reports /tmp as /private/tmp via native folder pickers and realpath().
+  // Allow /tmp and /private/tmp (macOS)
+  if (isWithinRoot(resolvedPath, '/tmp')) {
+    return true
+  }
+
   if (process.platform === 'darwin' && isWithinRoot(resolvedPath, '/private/tmp')) {
     return true
   }
@@ -99,7 +104,7 @@ async function handleBrowse(url: URL): Promise<Response> {
   const resolvedPath = path.resolve(targetPath)
 
   if (!isAllowedFilesystemPath(resolvedPath)) {
-    return json({ error: 'Access denied: path outside allowed directory' }, 403)
+    return json({ error: 'Access denied: path outside allowed directory', path: resolvedPath }, 403)
   }
 
   const searchQuery = url.searchParams.get('search') || ''
@@ -167,8 +172,9 @@ async function handleBrowse(url: URL): Promise<Response> {
       parentPath: path.dirname(resolvedPath),
       entries: entries_list,
     })
-  } catch (err) {
-    return json({ error: `Cannot read directory: ${err}`, path: resolvedPath }, 500)
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : 'Unknown error'
+    return json({ error: `Cannot read directory: ${errorMessage}`, path: resolvedPath }, 500)
   }
 }
 

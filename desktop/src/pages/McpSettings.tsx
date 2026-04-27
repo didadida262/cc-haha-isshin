@@ -266,7 +266,7 @@ function ToggleSwitch({
       } ${disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
     >
       <span
-        className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform ${
+        className={`inline-block h-6 w-6 transform rounded-full bg-[var(--color-on-surface)] transition-transform ${
           checked ? 'translate-x-7' : 'translate-x-1'
         }`}
       />

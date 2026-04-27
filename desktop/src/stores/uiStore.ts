@@ -8,7 +8,7 @@ function getStoredTheme(): ThemeMode {
     const stored = localStorage.getItem(THEME_STORAGE_KEY)
     if (stored === 'light' || stored === 'dark') return stored
   } catch { /* localStorage unavailable */ }
-  return 'light'
+  return 'dark'
 }
 
 export function applyTheme(theme: ThemeMode) {

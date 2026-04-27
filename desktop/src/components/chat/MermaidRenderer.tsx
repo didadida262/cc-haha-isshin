@@ -279,7 +279,7 @@ export function MermaidRenderer({ code }: Props) {
         {/* Diagram */}
         <div
           ref={containerRef}
-          className="flex items-center justify-center overflow-auto bg-white p-4 cursor-pointer"
+          className="flex items-center justify-center overflow-auto bg-[var(--color-surface-bright)] p-4 cursor-pointer"
           style={{ maxHeight: 400 }}
           onClick={handlePreview}
           dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } }) }}
@@ -329,7 +329,7 @@ export function MermaidRenderer({ code }: Props) {
           <div
             ref={previewViewportRef}
             data-testid="mermaid-preview-viewport"
-            className="overflow-auto rounded-xl bg-white"
+            className="overflow-auto rounded-xl bg-[var(--color-surface-bright)]"
             style={{
               maxHeight: '75vh',
               cursor: isDraggingPreview ? 'grabbing' : 'grab',
